@@ -10,6 +10,7 @@ Static recovery of **seo-coaching.net** (SEO Coaching, Mentoring & Training by M
 - [`tools/recover.mjs`](./tools/recover.mjs) — crawls the Wayback snapshot: downloads every page + asset (HTML, CSS, JS, images, fonts) and rewrites all URLs to local root-relative paths
 - [`tools/repair.mjs`](./tools/repair.mjs) — re-scans saved files for missing asset references and fetches them (with an archive.org availability pre-check)
 - [`tools/polish.mjs`](./tools/polish.mjs) — fixes inline font URLs, remaps dead images onto surviving size-variants, strips never-archived script/link tags
+- [`tools/slim.mjs`](./tools/slim.mjs) — keeps only woff2 fonts and referenced assets (`--apply` to execute)
 - [`large-files/`](./large-files) — files recovered but excluded from deployment (see below)
 
 ## Recovery pipeline
