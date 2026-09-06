@@ -1,0 +1,7 @@
+name = "seo-coaching-www-redirect"
+main = "worker.js"
+compatibility_date = "2026-09-06"
+
+routes = [
+  { pattern = "www.seo-coaching.net/*", zone_name = "seo-coaching.net" }
+]
