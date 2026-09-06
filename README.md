@@ -2,7 +2,9 @@
 
 Static recovery of **seo-coaching.net** (SEO Coaching, Mentoring & Training by Marketing Intelligence Ltd / Meelis Malk) from the Wayback Machine snapshot of **2025-02-17 04:42:45 UTC**.
 
-**Live site:** https://seo-coaching.pages.dev/
+**Live site:** https://seo-coaching.net (apex) · https://seo-coaching.pages.dev (Pages subdomain)
+
+Custom domain `seo-coaching.net` is attached to the Pages project (CNAME apex/www → `seo-coaching.pages.dev`, flattened). `www` is 301-redirected to the apex by [`workers/www-redirect`](./workers/www-redirect) (a route Worker — it runs before Pages and preserves path + query string).
 
 ## Structure
 
