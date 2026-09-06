@@ -5,7 +5,7 @@
  * Usage:  node tools/recover.mjs
  * Output: site/  (deployable static mirror)
  */
-import { createWriteStream, mkdirSync, writeFileSync, existsSync, statSync } from 'node:fs';
+import { createWriteStream, mkdirSync, writeFileSync, existsSync, statSync, readFileSync } from 'node:fs';
 import { dirname, join, posix } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Readable } from 'node:stream';
@@ -22,6 +22,35 @@ const WB = 'https://web.archive.org/web';
 const SKIP_PATHS = [/^\/feed\/?/, /^\/comments\/feed\/?/, /^\/wp-json/, /^\/xmlrpc\.php/];
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// --- availability cache (archive.org API, different host than web.archive.org) ---
+const AVAIL_CACHE_FILE = join(__dirname, '.avail-cache.json');
+const availCache = existsSync(AVAIL_CACHE_FILE) ? JSON.parse(readFileSync(AVAIL_CACHE_FILE, 'utf8')) : {};
+const availPending = new Map();
+
+async function checkAvailable(origUrl) {
+  if (origUrl in availCache) return availCache[origUrl];
+  if (availPending.has(origUrl)) return availPending.get(origUrl);
+  const p = (async () => {
+    try {
+      const api = `http://archive.org/wayback/available?url=${encodeURIComponent(origUrl)}&timestamp=${TS}`;
+      const res = await fetch(api, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+      if (res.ok) {
+        const data = await res.json();
+        const snap = data.archived_snapshots?.closest;
+        return snap && snap.available && snap.status === '200' ? snap.url : null;
+      }
+    } catch {}
+    return undefined; // unknown — let caller try anyway
+  })().then((r) => {
+    availCache[origUrl] = r;
+    writeFileSync(AVAIL_CACHE_FILE, JSON.stringify(availCache));
+    availPending.delete(origUrl);
+    return r;
+  });
+  availPending.set(origUrl, p);
+  return p;
+}
 
 // --- global request pacing + circuit breaker (archive.org blocks request bursts) ---
 let lastReqStart = 0;
@@ -115,10 +144,20 @@ async function downloadAsset(url, refererPath = '/') {
     const rel = new URL(orig).pathname;
     const dest = join(OUT, rel);
     if (existsSync(dest) && statSync(dest).size > 0) return rel; // resume support
+    // ask the availability API first (cheap, different host) to avoid 404-storms
+    const snapUrl = await checkAvailable(orig);
+    if (snapUrl === null) {
+      console.warn(`  [NOT ARCHIVED] ${orig}`);
+      return null;
+    }
     const isBinary = /\.(png|jpe?g|gif|webp|avif|svg|ico|woff2?|ttf|otf|eot|mp4|webm)(\?|$)/i.test(orig);
-    const mods = isBinary ? ['im_', '', 'id_'] : ['id_', '', 'cs_', 'js_'];
-    for (const mod of mods) {
-      const buf = await fetchBuf(wbUrl(orig, mod));
+    const tries = snapUrl
+      ? [snapUrl] // exact closest capture
+      : isBinary
+        ? [wbUrl(orig, 'im_'), wbUrl(orig, '')]
+        : [wbUrl(orig, ''), wbUrl(orig, 'id_')];
+    for (const url of tries) {
+      const buf = await fetchBuf(url);
       if (buf && buf.length > 0) {
         mkdirSync(dirname(dest), { recursive: true });
         writeFileSync(dest, buf);
@@ -172,7 +211,7 @@ async function fetchPage(path) {
 }
 
 const ATTR_RE = /\b(src|href|srcset|data-src|data-srcset|data-bg|data-large-file|data-medium-file|poster)=("([^"]*)"|'([^']*)')/g;
-const ASSET_EXT_RE = /\.(css|js|mjs|png|jpe?g|gif|webp|avif|svg|ico|woff2?|ttf|otf|eot|mp4|webm|txt|xml)(\?|#|$)/i;
+const ASSET_EXT_RE = /\.(css|js|mjs|png|jpe?g|gif|webp|avif|svg|ico|woff2?|ttf|otf|eot|mp4|webm|txt|xml|pdf|zip)(\?|#|$)/i;
 const STYLE_URL_RE = /url\((['"]?)(https?:\/\/(?:web\.archive\.org\/web\/\d+(?:[a-z]{2})?_\/https?:\/\/)?[^'")]+)\1\)/g;
 
 async function processPage(path, html) {
@@ -250,23 +289,30 @@ async function main() {
     if (SKIP_PATHS.some((re) => re.test(path))) continue;
     if (ASSET_EXT_RE.test(path)) continue; // asset URLs are fetched by processPage, not crawled
 
-    console.log(`fetching ${path} ...`);
-    const buf = await fetchPage(path);
-    if (!buf) {
-      console.warn(`  [MISSING PAGE] ${path}`);
-      continue;
+    const dest = path === '/' ? join(OUT, 'index.html') : join(OUT, path.replace(/\/$/, ''), 'index.html');
+    let html;
+    if (existsSync(dest)) {
+      // page already recovered — use local copy for link discovery only
+      html = readFileSync(dest, 'utf8');
+    } else {
+      console.log(`fetching ${path} ...`);
+      const buf = await fetchPage(path);
+      if (!buf) {
+        console.warn(`  [MISSING PAGE] ${path}`);
+        continue;
+      }
+      html = buf.toString('utf8');
+      await processPage(path, html);
     }
-    const html = buf.toString('utf8');
-    await processPage(path, html);
     discovered.push(path);
 
-    // discover internal links (original or wayback-prefixed)
-    const linkRe = /href="(https?:\/\/(?:web\.archive\.org\/web\/\d+(?:[a-z]{2})?_\/https?:\/\/)?seo-coaching\.net(\/[^"#?]*))"/g;
+    // discover internal links: absolute origin URLs, wayback-prefixed URLs, or root-relative (local files)
+    const linkRe = /href="((?:https?:\/\/(?:web\.archive\.org\/web\/\d+(?:[a-z]{2})?_\/https?:\/\/)?seo-coaching\.net)?(\/[^"#?]*))"/g;
     for (const m of html.matchAll(linkRe)) {
       const orig = unwayback(m[1]);
       let p;
       try {
-        p = new URL(orig).pathname;
+        p = orig.startsWith('/') ? orig.split(/[?#]/)[0] : new URL(orig).pathname;
       } catch {
         continue;
       }

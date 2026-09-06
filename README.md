@@ -35,3 +35,10 @@ npx wrangler pages deploy site --project-name=seo-coaching
 - Original CMS was WordPress + Divi (SiteGround-optimised). All dynamic endpoints
   (wp-json, xmlrpc, feeds) were stripped; the site is now fully static.
 - Contact section (phone numbers, company details) is preserved as in the snapshot.
+
+## Large files (not deployed)
+
+Cloudflare Pages limits files to 25 MiB. The following recovered file is kept in
+[`large-files/`](./large-files) but excluded from deployments:
+
+- `The-AI-in-Business-Trend-Report-2023.pdf` (78 MiB, linked from the blog post about the AI in Business trend report)
